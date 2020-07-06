@@ -1,1 +1,2 @@
-# Structural-Analysis
+# Structural Analysis Project
+Beam Solver
