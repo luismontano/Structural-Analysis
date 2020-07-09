@@ -1,9 +1,14 @@
 package com.structuralanalisis.structuralanalisis.dtos;
 
+import com.fasterxml.jackson.databind.annotation.JsonSerialize;
+import com.structuralanalisis.structuralanalisis.serializer.NodeValueSerializer;
+
 public class NodeValue implements Comparable<NodeValue> {
 
+	@JsonSerialize(using = NodeValueSerializer.class)
 	private Double x;
-	
+
+	@JsonSerialize(using = NodeValueSerializer.class)
 	private Double value;
 	
 	public NodeValue() {

@@ -1,0 +1,88 @@
+package com.structuralanalisis.structuralanalisis.util;
+
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.stream.Collectors;
+
+import com.structuralanalisis.structuralanalisis.dtos.Element;
+import com.structuralanalisis.structuralanalisis.dtos.Identifiable;
+import com.structuralanalisis.structuralanalisis.dtos.Node;
+
+public class SolverUtil {
+
+	public static Map<Double, Integer> getIndexByNodeId(List<Node> nodes) {
+		
+		Map<Double, Integer> indexByNodeId = new HashMap<Double, Integer>();
+		int index = 1;
+		
+		for(Node node : nodes) {
+			indexByNodeId.put(node.getId(), index++);
+		}
+		
+		return indexByNodeId;
+	}
+	
+	public static <T extends Identifiable> Map<Double, T> getById(List<T> list) {
+		
+		if(list == null)
+			return new HashMap<Double, T>();
+		
+		return list.parallelStream().collect(Collectors.toMap(e -> e.getId(), e -> e));
+	}
+	
+	public static Map<Double, Node> getNodeById(List<Node> list) {
+		
+		Map<Double, Node>
+		
+		if(list == null)
+			return new HashMap<Double, Node>();
+		
+		return list.parallelStream().collect(Collectors.toMap(e -> e.getId(), e -> e));
+	}
+
+	public static void processLengths(Map<Double, Node> nodeById, List<Element> elements) {
+		
+		if(elements == null)
+			return;
+		
+		for(Element element : elements) {
+			
+			final Node start = nodeById.get(element.getStartNodeId());
+			final Node end = nodeById.get(element.getEndNodeId());
+			element.setLength(Math.abs(start.getX() - end.getX()));			
+		}
+	}
+	
+	public static void printVector(String title, double[] vector) {
+//		System.out.println(title);
+//		DecimalFormat doubleFormat = new DecimalFormat("#.##");
+//		for (int i = 0; i < vector.length; i++) {
+//            System.out.printf("%10s",doubleFormat.format(vector[i])); 
+//			System.out.println();
+//		}
+//		System.out.println();
+	}
+	
+	public static void printMatrix(String title, double[][] matrix) {
+//		System.out.println(title);
+//		DecimalFormat doubleFormat = new DecimalFormat("#.##");
+//		for (int i = 0; i < matrix.length; i++) {
+//			for (int j = 0; j < matrix[i].length; j++) 
+//                System.out.printf("%10s",doubleFormat.format(matrix[i][j])); 
+//			System.out.println();
+//		}
+//		System.out.println();
+	}
+	
+	public static double [][] copyMatrix(double [][] matrix){
+		double [][] myCopy = new double[matrix.length][];
+		for(int i = 0; i < matrix.length; i++)
+		    myCopy[i] = matrix[i].clone();
+		return myCopy;
+	}
+	
+	public static double [] copyVector(double [] vector){
+		return vector.clone();
+	}
+}

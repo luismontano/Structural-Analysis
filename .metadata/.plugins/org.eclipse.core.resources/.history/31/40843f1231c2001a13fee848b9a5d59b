@@ -1,0 +1,13 @@
+package com.structuralanalisis.structuralanalisis.services;
+
+import com.structuralanalisis.structuralanalisis.dtos.BeamAnswer;
+import com.structuralanalisis.structuralanalisis.dtos.BeamProblem;
+
+public interface BeamSolverI {
+
+	public BeamAnswer solveBeam(BeamProblem beamProblem);
+	
+	public BeamAnswer solveBeam(BeamProblem beamProblem, double intervalSize);
+
+	public double[][] getRigidMatrix(double length, double youngModulus, double momentOfInertia);
+}

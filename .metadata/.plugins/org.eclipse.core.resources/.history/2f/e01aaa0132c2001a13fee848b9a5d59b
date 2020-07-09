@@ -1,0 +1,5 @@
+package com.structuralanalisis.structuralanalisis.serializer;
+
+public class NodeXSerializer extends JsonSerializer<BigDecimal>{
+
+}

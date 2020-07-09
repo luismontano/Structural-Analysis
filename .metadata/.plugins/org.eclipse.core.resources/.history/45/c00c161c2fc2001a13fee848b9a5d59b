@@ -1,0 +1,356 @@
+package com.structuralanalisis.structuralanalisis.services;
+
+import static com.structuralanalisis.structuralanalisis.util.SolverUtil.getById;
+import static com.structuralanalisis.structuralanalisis.util.SolverUtil.getIndexByNodeId;
+import static com.structuralanalisis.structuralanalisis.util.SolverUtil.getNodeById;
+import static com.structuralanalisis.structuralanalisis.util.SolverUtil.processLengths;
+
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.Comparator;
+import java.util.HashMap;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+
+import org.apache.commons.math3.linear.MatrixUtils;
+import org.apache.commons.math3.linear.RealMatrix;
+import org.apache.commons.math3.linear.RealVector;
+import org.springframework.stereotype.Component;
+
+import com.structuralanalisis.structuralanalisis.dtos.BeamAnswer;
+import com.structuralanalisis.structuralanalisis.dtos.BeamProblem;
+import com.structuralanalisis.structuralanalisis.dtos.Element;
+import com.structuralanalisis.structuralanalisis.dtos.Material;
+import com.structuralanalisis.structuralanalisis.dtos.Node;
+import com.structuralanalisis.structuralanalisis.dtos.NodeValue;
+import com.structuralanalisis.structuralanalisis.dtos.PuntualLoad;
+import com.structuralanalisis.structuralanalisis.dtos.Section;
+import com.structuralanalisis.structuralanalisis.dtos.Support;
+import com.structuralanalisis.structuralanalisis.util.SolverUtil;
+
+@Component
+public class BeamSolver implements BeamSolverI{
+	
+	@Override
+	public BeamAnswer solveBeam(BeamProblem beamProblem) {
+		
+		if(beamProblem == null)
+			return new BeamAnswer();
+		
+		// Sort nodes
+		Collections.sort(beamProblem.getNodes());
+		AddMoreNodes(beamProblem);
+		
+		// 1. get data
+		Map<Double, Node> nodeById = getNodeById(beamProblem.getNodes());
+		Map<Double, Integer> indexByNodeId = getIndexByNodeId(beamProblem.getNodes());
+		Map<Double, Material> materialById = getById(beamProblem.getMaterials());
+		Map<Double, Section> sectionById = getById(beamProblem.getSections());
+		
+		// 2. Process elements
+		processLengths(nodeById, beamProblem.getElements());
+		
+		// 3. General calculus
+		int degreesOfFreedom = 2 * beamProblem.getNodes().size();
+		
+		// 4. Rigid Matrix 
+		Map<Double, double [][]> rigidMatrixByElementId = getRigidMatrixByElementId(beamProblem.getElements(), materialById, sectionById);
+		
+		// 5. Force Vector
+		double [] forceVector = generateForceVector(indexByNodeId, beamProblem.getPuntualLoads(), degreesOfFreedom);
+		SolverUtil.printVector("Force Vector", forceVector);
+		
+		// 6. Structure rigid matrix
+		double [][] structureRigidMatrix = generateStructureRigidMatrix(indexByNodeId, degreesOfFreedom, beamProblem.getElements(), rigidMatrixByElementId);		
+		SolverUtil.printMatrix("Rigid Matrix for Struture", structureRigidMatrix);
+		
+		// 7. Restrict rigid matrix and force vector
+		double [][] restrictedMatrix = restrictMatrix(indexByNodeId, structureRigidMatrix, beamProblem.getSupports());
+		SolverUtil.printMatrix("Restricted Matrix for Structure", restrictedMatrix);
+		
+		double [] restrictedVector = restrictVector(indexByNodeId, forceVector, beamProblem.getSupports());
+		SolverUtil.printVector("Restricted Vector for Struture", restrictedVector);
+		
+		// 8. Displacements
+		RealMatrix inverseMatrix = MatrixUtils.inverse(MatrixUtils.createRealMatrix(restrictedMatrix));
+		double[] displacements = inverseMatrix.operate(restrictedVector);
+		SolverUtil.printVector("Displacements", displacements);
+		
+		// 9. Reactions
+		RealVector reactions = MatrixUtils.createRealMatrix(structureRigidMatrix).operate(MatrixUtils.createRealVector(displacements)).subtract(MatrixUtils.createRealVector(forceVector));
+		SolverUtil.printVector("Reactions", reactions.toArray());
+		
+		// 10. Internal forces
+		Map<Double, double[]> internalForcesByElementId = getInternalForcesByElementId(indexByNodeId, beamProblem.getElements(), rigidMatrixByElementId, displacements);
+		
+		BeamAnswer beamAnswer = createAnswer(nodeById, beamProblem.getElements(), internalForcesByElementId);
+		beamAnswer.setDegreesOfFreedom(degreesOfFreedom);
+		
+		return beamAnswer;
+	}
+
+	private BeamAnswer createAnswer(Map<Double, Node> nodeById, List<Element> elements, Map<Double, double[]> internalForcesByElementId) {
+		
+		Map<Double, NodeValue> shearNodes = new LinkedHashMap<Double, NodeValue>();
+		Map<Double, NodeValue> momentNodes = new LinkedHashMap<Double, NodeValue>();
+	
+		for(Element element : elements) {
+			double elementId = element.getId();
+			double left = nodeById.get(element.getStartNodeId()).getX();
+			double right = nodeById.get(element.getEndNodeId()).getX();
+						
+			double [] internalForces = internalForcesByElementId.get(elementId);
+			
+			// Shear
+			if(!shearNodes.containsKey(left))			
+				shearNodes.put(left, new NodeValue(left));
+			
+			if(!shearNodes.containsKey(right))
+				shearNodes.put(right, new NodeValue(right));
+			
+			NodeValue leftShearNode = shearNodes.get(left);
+			leftShearNode.setValue(internalForces[0]);
+			
+			// Moment
+			if(!momentNodes.containsKey(left))			
+				momentNodes.put(left, new NodeValue(left));
+			
+			if(!momentNodes.containsKey(right))
+				momentNodes.put(right, new NodeValue(right));
+			
+			NodeValue leftMomentNode = momentNodes.get(left);
+			leftMomentNode.setValue(internalForces[1]);
+		}
+		
+		List<NodeValue> shearValues = new ArrayList<NodeValue>(shearNodes.values());
+		List<NodeValue> momentValues = new ArrayList<NodeValue>(momentNodes.values());
+		
+		Collections.sort(shearValues);
+		Collections.sort(momentValues);
+		
+		return new BeamAnswer(null, momentValues);
+	}
+
+	private Map<Double, double[]> getInternalForcesByElementId(Map<Double, Integer> indexByNodeId, List<Element> elements, Map<Double, double[][]> rigidMatrixByElementId, double[] displacements) {
+		
+		Map<Double, double[]> internalForcesByElementId = new HashMap<Double, double[]>(); 
+		
+		for(Element element : elements) {
+			double start = element.getStartNodeId();
+			
+			double [][] elementRigidMatrix = rigidMatrixByElementId.get(element.getId());
+			
+			int displacementStartIndex = (indexByNodeId.get(start) - 1) * 2;
+			int displacementEndIndex = displacementStartIndex + 4;
+					;
+			double [] elementDisplacement = Arrays.copyOfRange(displacements, displacementStartIndex, displacementEndIndex);
+			
+			double [] internalForces = MatrixUtils.createRealMatrix(elementRigidMatrix).operate(MatrixUtils.createRealVector(elementDisplacement)).toArray();
+			SolverUtil.printVector("Internal Forces for Element " + element.getId() + " Start " + element.getStartNodeId() + " End " + element.getEndNodeId(), internalForces);
+			
+			internalForcesByElementId.put(element.getId(), internalForces);
+		}
+		
+		return internalForcesByElementId;
+	}
+
+	private double[] generateForceVector(Map<Double, Integer> indexByNodeId, List<PuntualLoad> puntualLoads, int degreesOfFreedom) {
+		
+		double [] forceVector = new double[degreesOfFreedom];
+		
+		for(PuntualLoad puntualLoad : puntualLoads) {
+			double nodeId = puntualLoad.getNodeId();
+			int verticalIndex = (indexByNodeId.get(nodeId) - 1) * 2;
+			int rotationIndex = verticalIndex + 1;
+			
+			forceVector[verticalIndex] = puntualLoad.getForce();
+			forceVector[rotationIndex] = puntualLoad.getMoment();
+		}
+		
+		return forceVector;
+	}
+	
+	private double[] restrictVector(Map<Double, Integer> indexByNodeId, double[] forceVector, List<Support> supports) {
+
+		double [] restrictVector = SolverUtil.copyVector(forceVector);
+		
+		for(Support support : supports) {
+			double nodeId = support.getNodeId();
+			int verticalIndex = (indexByNodeId.get(nodeId) - 1) * 2;
+			int rotationIndex = verticalIndex + 1;
+			
+			if(support.isVerticalRestriction())
+				forceVector[verticalIndex] = 0;
+			
+			if(support.isRotationRestriction())
+				forceVector[rotationIndex] = 0;
+		}
+		
+		return restrictVector;
+		
+	}
+
+	private double[][] restrictMatrix(Map<Double, Integer> indexByNodeId, double[][] structureRigidMatrix, List<Support> supports) {
+		
+		double [][] restrictedMatrix = SolverUtil.copyMatrix(structureRigidMatrix);
+		
+		for(Support support : supports) {
+			double nodeId = support.getNodeId();
+			int verticalIndex = (indexByNodeId.get(nodeId) - 1) * 2;
+			int rotationIndex = verticalIndex + 1;
+			
+			if(support.isVerticalRestriction())
+				applyRestriction(restrictedMatrix, verticalIndex);
+			
+			if(support.isRotationRestriction())
+				applyRestriction(restrictedMatrix, rotationIndex);
+		}
+		
+		return restrictedMatrix;
+	}
+
+	private void applyRestriction(double[][] restrictedMatrix, int index) {
+		for(int i = 0; i < restrictedMatrix.length; i++)
+		{
+			restrictedMatrix[index][i] = 0;
+			restrictedMatrix[i][index] = 0;
+		}
+		restrictedMatrix[index][index] = 1;
+	}
+
+	private double[][] generateStructureRigidMatrix(Map<Double, Integer> indexByNodeId, int degreesOfFreedom, List<Element> elements, Map<Double, double[][]> rigidMatrixByElementId) {
+		
+		double[][] ksr = new double[degreesOfFreedom][degreesOfFreedom];
+		for (int i = 0; i < ksr.length; i++)
+			for (int j = 0; j < ksr[i].length; j++) 
+                ksr[i][j] = 0d;
+			
+		for(Element element : elements) {
+			double[][] ke = rigidMatrixByElementId.get(element.getId());
+			int startNode = (indexByNodeId.get(element.getStartNodeId()) - 1) * 2;
+			int endNode = (indexByNodeId.get(element.getEndNodeId()) - 1) * 2;
+			ksr[startNode][startNode] = ksr[startNode][startNode] + ke[0][0];
+			ksr[startNode][startNode + 1] = ksr[startNode][startNode + 1] + ke[0][1];
+			ksr[startNode + 1][startNode] = ksr[startNode + 1][startNode] + ke[1][0];
+			ksr[startNode + 1][startNode + 1] = ksr[startNode + 1][startNode + 1] + ke[1][1];
+			ksr[startNode][endNode] = ksr[startNode][endNode] + ke[0][2];
+			ksr[startNode][endNode + 1] = ksr[startNode][endNode + 1] + ke[0][3];
+			ksr[startNode + 1][endNode] = ksr[startNode + 1][endNode] + ke[1][2];
+			ksr[startNode + 1][endNode + 1] = ksr[startNode + 1][endNode + 1] + ke[1][3];
+			ksr[endNode][startNode] = ksr[endNode][startNode] + ke[2][0];
+			ksr[endNode][startNode + 1] = ksr[endNode][startNode + 1] + ke[2][1];
+			ksr[endNode + 1][startNode] = ksr[endNode + 1][startNode] + ke[3][0];
+			ksr[endNode + 1][startNode + 1] = ksr[endNode + 1][startNode + 1] + ke[3][1];
+			ksr[endNode][endNode] = ksr[endNode][endNode] + ke[2][2];
+			ksr[endNode][endNode + 1] = ksr[endNode][endNode + 1] + ke[2][3];
+			ksr[endNode + 1][endNode] = ksr[endNode + 1][endNode] + ke[3][2];
+			ksr[endNode + 1][endNode + 1] = ksr[endNode + 1][endNode + 1] + ke[3][3];
+		}
+		
+		return ksr;
+	}
+
+	private Map<Double, double [][]> getRigidMatrixByElementId(List<Element> elements, final Map<Double, Material> materialById, final Map<Double, Section> sectionById) {
+
+		Map<Double, double [][]> rigidMatrixByElementId = new HashMap<Double, double [][]>();
+		
+		for(Element element : elements) {
+			double youngModulus = materialById.get(element.getMaterialId()).getYoungModulus();
+			double momentOfInertia = sectionById.get(element.getSectionId()).getMomentOfInertia();
+			double [][] rigidMatrix = getRigidMatrix(element.getLength(), youngModulus, momentOfInertia);
+			SolverUtil.printMatrix("Rigid Matrix for Element " + element.getId(), rigidMatrix);
+			
+			rigidMatrixByElementId.put(element.getId(), rigidMatrix);
+		}
+			
+		
+		return rigidMatrixByElementId;
+	}
+
+	@Override
+	public double [][] getRigidMatrix(double length, double youngModulus, double momentOfInertia) {
+
+		double constant = length == 0 ? 0d : youngModulus * momentOfInertia / Math.pow(length, 3);
+		
+		double [][] rigidMatrix = new double[4][4];
+		
+		// First Row
+		rigidMatrix[0][0] = 12d * constant;
+		rigidMatrix[0][1] = 6d * length * constant;
+		rigidMatrix[0][2] = -12d * constant;
+		rigidMatrix[0][3] = 6d * length * constant;
+		
+		// Second Row
+		rigidMatrix[1][0] = 6d * length * constant;
+		rigidMatrix[1][1] = 4d * Math.pow(length, 2) * constant;
+		rigidMatrix[1][2] = -6d * length * constant;
+		rigidMatrix[1][3] = 2d * Math.pow(length, 2) * constant;
+		
+		// Third Row
+		rigidMatrix[2][0] = -12 * constant;
+		rigidMatrix[2][1] = -6d * length * constant;
+		rigidMatrix[2][2] = 12d * constant;
+		rigidMatrix[2][3] = -6d * length * constant;
+		
+		// Fourth Row
+		rigidMatrix[3][0] = 6d * length * constant;
+		rigidMatrix[3][1] = 2d * Math.pow(length, 2) * constant;
+		rigidMatrix[3][2] = -6d * length * constant;
+		rigidMatrix[3][3] = 4d * Math.pow(length, 2) * constant;		
+		
+		return rigidMatrix;
+	}
+	
+	private void AddMoreNodes(BeamProblem beamProblem) {
+		
+		Map<Double, Node> nodeById = getById(beamProblem.getNodes());
+		List<Element> currentElements = beamProblem.getElements();
+		List<Element> newElements = beamProblem.getElements();
+		double minX = beamProblem.getNodes().stream().min(Comparator.comparing( Node::getX )).get().getX();
+		double maxX = beamProblem.getNodes().stream().max(Comparator.comparing( Node::getX )).get().getX();
+		
+		double increasing = getIntervalSize();
+		for(double x = minX + increasing; x <= maxX; x += increasing) {
+			double fromX = x;
+			double toX = x + increasing;
+			Element elementInRange = findElementInsideRange(currentElements, fromX, toX, nodeById);
+			
+			if(elementInRange != null) {
+				Element newElement = elementInRange.copy();
+				newElement.setId((double) (currentElements.size() + newElements.size() + 1));
+				
+				Node newNode = new Node(x, x);
+				beamProblem.getNodes().add(newNode);
+				
+				elementInRange.setEndNodeId(newNode.getId());
+				
+				newElement.setStartNodeId(newNode.getId());
+				newElements.add(newElement);
+				nodeById.put(newNode.getId(), newNode);
+			}
+		}
+		
+		beamProblem.setElements(newElements);
+		Collections.sort(beamProblem.getNodes());
+	}
+
+	private double getIntervalSize() {
+		// TODO Auto-generated method stub
+		return 0;
+	}
+
+	private Element findElementInsideRange(List<Element> elements, double fromX, double toX, Map<Double, Node> nodeById) {
+
+		for(Element element : elements) {
+			double startX = nodeById.get(element.getStartNodeId()).getX();
+			double endX = nodeById.get(element.getEndNodeId()).getX();
+			
+			 if(startX < fromX && toX < endX)
+				 return element;
+		}
+		
+		return null;
+	}
+}

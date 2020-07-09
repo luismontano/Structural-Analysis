@@ -18,7 +18,6 @@ public class BeamSolverTest {
 				
 		double [][] rigidMatrix = beamSolverService.getRigidMatrix(2l, 100000000, 0.00000085333333);
 		SolverUtil.printMatrix("getRigidMatrixTest", rigidMatrix);
-            
 	}
 	
 	@Test
